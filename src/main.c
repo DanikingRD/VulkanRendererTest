@@ -25,7 +25,7 @@ void create_surface(GLFWwindow* window, struct Renderer* renderer) {
 		return;
 	}
 
-	printf("The window surface has been created.");
+	printf("The window surface has been created.\n");
 }
 
 struct OptionFamily {
@@ -49,6 +49,7 @@ struct QueueFamily find_queue_families(struct Renderer* renderer, VkPhysicalDevi
 
 	for (uint32_t i = 0; i < count; i++) {
 		VkQueueFamilyProperties props = family_properties[i];
+		
 		if (props.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
 			struct OptionFamily graphics_family = {
 				.value = i,
@@ -63,11 +64,9 @@ struct QueueFamily find_queue_families(struct Renderer* renderer, VkPhysicalDevi
 				.value = i,
 				.is_present = true,
 			};
-			family.graphics = present_family;
-		}
+			family.presentation = present_family;
+		} 
 	}
-
-
 	return family;
 }
 bool is_queue_family_ready(struct QueueFamily family) {
@@ -271,12 +270,14 @@ void pick_physical_device(struct Renderer* renderer){
 		vkGetPhysicalDeviceFeatures(device, &features);
 		if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && features.geometryShader) {
 			struct QueueFamily family = find_queue_families(renderer, device);
-			if (is_queue_family_ready(family)) {
+	 	if (is_queue_family_ready(family)) {
 				renderer->physical_device = device;
 				create_logical_device(renderer);
 				printf("GPU: %s has been picked.\n", properties.deviceName);
 				break;
-			}
+			} 
+		} else {
+			printf("Queue not ready.\n");
 		}
 	}
 
@@ -300,6 +301,7 @@ int main(void) {
 	}
 	struct Renderer renderer = { 0 };
 	create_vk_instance(&renderer);
+	create_surface(window, &renderer);
 	pick_physical_device(&renderer);
 	while(!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
