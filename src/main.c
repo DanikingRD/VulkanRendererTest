@@ -5,9 +5,19 @@
 #include <GLFW/glfw3.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdlib.h>
+struct SwapChainDetails {
+	VkSurfaceCapabilitiesKHR capabilities;
+	VkSurfaceFormatKHR* formats;
+	VkPresentModeKHR* preset_modes;
+};
 
 const char * VALIDATION_LAYERS[] = {
 	"VK_LAYER_KHRONOS_validation"
+};
+
+const char* DEVICE_EXTENSIONS[] = {
+	VK_KHR_SWAPCHAIN_EXTENSION_NAME 
 };
 
 struct Renderer {
@@ -19,14 +29,6 @@ struct Renderer {
 	VkQueue present_queue;
 };
 
-void create_surface(GLFWwindow* window, struct Renderer* renderer) {
-	if (glfwCreateWindowSurface(renderer->instance, window, NULL, &renderer->surface) != VK_SUCCESS) {
-		printf("Failed to create window surface");
-		return;
-	}
-
-	printf("The window surface has been created.\n");
-}
 
 struct OptionFamily {
 	bool is_present;
@@ -38,6 +40,29 @@ struct QueueFamily {
 	struct OptionFamily graphics;
 	struct OptionFamily presentation;
 };
+
+
+struct SwapChainDetails query_swapchain_details(struct Renderer* renderer) {
+	struct SwapChainDetails details = {};
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(renderer->physical_device, renderer->surface, &details.capabilities);
+
+	uint32_t formats = 0;
+	vkGetPhysicalDeviceSurfaceFormatsKHR(renderer->physical_device, renderer->surface, &formats, NULL);
+	if (formats != 0) {
+		details.formats = malloc(sizeof(VkSurfaceFormatKHR) * formats);
+		vkGetPhysicalDeviceSurfaceFormatsKHR(renderer->physical_device, renderer->surface, &formats, details.formats);
+	}
+	
+	uint32_t present_modes = 0;
+	vkGetPhysicalDeviceSurfacePresentModesKHR(renderer->physical_device, renderer->surface, &present_modes, NULL);
+
+	if (present_modes != 0) {
+		details.preset_modes = malloc(sizeof(VkPresentModeKHR) * present_modes);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(renderer->physical_device, renderer->surface, &present_modes, details.preset_modes);
+	}
+
+	return details;
+}
 
 
 struct QueueFamily find_queue_families(struct Renderer* renderer, VkPhysicalDevice device) {
@@ -69,18 +94,70 @@ struct QueueFamily find_queue_families(struct Renderer* renderer, VkPhysicalDevi
 	}
 	return family;
 }
+
+
+int check_validation_layers_support() {
+	uint32_t available_layers_size;
+	vkEnumerateInstanceLayerProperties(&available_layers_size, NULL);
+	
+	printf("Available layers count: %d\n", available_layers_size);
+	VkLayerProperties layers[available_layers_size];
+	vkEnumerateInstanceLayerProperties(&available_layers_size, layers);
+	
+	bool found = false;
+	uint32_t validation_layers_size = 1;
+	for (uint32_t i = 0; i < validation_layers_size; i++) {
+		const char* required_layer = VALIDATION_LAYERS[i];
+		for (uint32_t j = 0; j < available_layers_size; j++) {
+			const char* available_layer = layers[j].layerName;
+			printf("Found layer: %d\n", available_layers_size);
+			if (strcmp(required_layer, available_layer) == 0) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return false;
+		} 
+	}
+	return true;
+}
+
+
+
+bool check_device_extension_support(VkPhysicalDevice device) {
+	uint32_t count;
+	vkEnumerateDeviceExtensionProperties(device, NULL, &count, NULL);
+	VkExtensionProperties available_extensions[count];
+	vkEnumerateDeviceExtensionProperties(device, NULL, &count, available_extensions);
+	const uint32_t DEVICE_EXT_COUNT = 1;
+	bool found = false;
+	for (uint32_t i = 0; i < DEVICE_EXT_COUNT; i++) {
+		const char* ext_name = DEVICE_EXTENSIONS[i];
+		for (uint32_t j = 0; j < count; j++) {
+			VkExtensionProperties ext = available_extensions[i];
+			if (strcmp(ext_name, ext.extensionName) == 0) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return false;
+		}
+		
+	}
+	return true;
+}
+
 bool is_queue_family_ready(struct QueueFamily family) {
 	return family.graphics.is_present && family.presentation.is_present;
 }
 
-
 void create_logical_device(struct Renderer* renderer) {
 	struct QueueFamily family = find_queue_families(renderer, renderer->physical_device);
-	// create_info.pQueuePriorities = &prio;dd
 		
 	const uint32_t QUEUE_COUNT = 2; // 0. graphics. 1. presentation
 	VkDeviceQueueCreateInfo queue_infos[QUEUE_COUNT];
-	// uint32_t families[] = { family.graphics.value, family.presentation.value };
 
 	float priority = 1.0f;
 	for (uint32_t i = 0; i < QUEUE_COUNT; i++) {
@@ -93,11 +170,15 @@ void create_logical_device(struct Renderer* renderer) {
 	}
 
 	VkPhysicalDeviceFeatures device_features = {};
+
 	VkDeviceCreateInfo logical_create_info = {};
+	logical_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	logical_create_info.pQueueCreateInfos = queue_infos;
 	logical_create_info.queueCreateInfoCount = QUEUE_COUNT;
 	logical_create_info.pEnabledFeatures = &device_features;
-	logical_create_info.enabledExtensionCount = 0;
+	logical_create_info.enabledExtensionCount = 1;
+	logical_create_info.ppEnabledExtensionNames = DEVICE_EXTENSIONS;
+	
 
 	if (vkCreateDevice(renderer->physical_device, &logical_create_info, NULL, &renderer->logical_device) != VK_SUCCESS) {
 		printf("Failed to create Logical Device.");
@@ -160,32 +241,12 @@ void setup_debug_messenger(VkInstance instance) {
 		printf("Debug messenger has been setup.");
 	}
 }
-
-int check_validation_layers_support() {
-	uint32_t available_layers_size;
-	vkEnumerateInstanceLayerProperties(&available_layers_size, NULL);
-	
-	printf("Available layers count: %d\n", available_layers_size);
-	VkLayerProperties layers[available_layers_size];
-	vkEnumerateInstanceLayerProperties(&available_layers_size, layers);
-	
-	bool found = false;
-	uint32_t validation_layers_size = 1;
-	for (uint32_t i = 0; i < validation_layers_size; i++) {
-		const char* required_layer = VALIDATION_LAYERS[i];
-		for (uint32_t j = 0; j < available_layers_size; j++) {
-			const char* available_layer = layers[j].layerName;
-			printf("Found layer: %d\n", available_layers_size);
-			if (strcmp(required_layer, available_layer) == 0) {
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
-			return false;
-		} 
+void create_surface(GLFWwindow* window, struct Renderer* renderer) {
+	if (glfwCreateWindowSurface(renderer->instance, window, NULL, &renderer->surface) != VK_SUCCESS) {
+		printf("Failed to create window surface");
+		return;
 	}
-	return true;
+	printf("The window surface has been created.\n");
 }
 
 void create_vk_instance(struct Renderer* renderer) {
@@ -209,15 +270,11 @@ void create_vk_instance(struct Renderer* renderer) {
 	create_info.pApplicationInfo = &info;
 
 	uint32_t glfw_ext_count;
-	const char** glfw_ext_names;
-	glfw_ext_names = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
-	
+	const char** glfw_ext_names = glfw_ext_names = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
 	const char* required_exts[glfw_ext_count + 1];
-
 	for (uint32_t i = 0; i < glfw_ext_count; i++) {
 		required_exts[i] = glfw_ext_names[i];
 	}
-
 	required_exts[glfw_ext_count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 	
 	for (uint32_t i = 0; i < glfw_ext_count + 1; i++) {
@@ -233,7 +290,6 @@ void create_vk_instance(struct Renderer* renderer) {
 	
 	uint32_t available_ext_count = 0;
 	vkEnumerateInstanceExtensionProperties(NULL, &available_ext_count, NULL);
-
 	VkExtensionProperties properties[available_ext_count];
 	
 	vkEnumerateInstanceExtensionProperties(NULL, &available_ext_count, properties);
@@ -241,9 +297,8 @@ void create_vk_instance(struct Renderer* renderer) {
 	for (uint32_t i = 0; i < available_ext_count; i++) {
 		printf(" * %s\n", properties[i].extensionName);
 	}
-	VkResult result = vkCreateInstance(&create_info, NULL, &renderer->instance);
 
-	if (result != VK_SUCCESS) {
+	if (vkCreateInstance(&create_info, NULL, &renderer->instance)!= VK_SUCCESS) {
 		printf("Failed to initialize Vulkan.\n");
 	} else {
 		printf("Vulkan initialized successfully.\n");
@@ -259,7 +314,7 @@ void pick_physical_device(struct Renderer* renderer){
 	}
 
 	VkPhysicalDevice devices[device_count];
-	vkEnumeratePhysicalDevices(renderer->instance, &device_count,	devices);
+	vkEnumeratePhysicalDevices(renderer->instance, &device_count, devices);
 	
 	// check if device is suitable
 	for (uint32_t i = 0; i< device_count; i++) {
@@ -270,17 +325,19 @@ void pick_physical_device(struct Renderer* renderer){
 		vkGetPhysicalDeviceFeatures(device, &features);
 		if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && features.geometryShader) {
 			struct QueueFamily family = find_queue_families(renderer, device);
-	 	if (is_queue_family_ready(family)) {
+			// bool extensions_supported = check_device_extension_support(device);
+	 		if (is_queue_family_ready(family)) {
 				renderer->physical_device = device;
+				struct SwapChainDetails details = query_swapchain_details(renderer);
+				if (!details.preset_modes) {
+					printf("Failed to collect presentation modes. should abort.\n");
+				}
 				create_logical_device(renderer);
 				printf("GPU: %s has been picked.\n", properties.deviceName);
 				break;
 			} 
-		} else {
-			printf("Queue not ready.\n");
-		}
+		} 
 	}
-
 	if (renderer->physical_device == NULL) {
 		printf("Failed to find a suitable GPU.\n");
 	}
@@ -299,7 +356,7 @@ int main(void) {
 		glfwTerminate();
 		return -1;
 	}
-	struct Renderer renderer = { 0 };
+	struct Renderer renderer = {};
 	create_vk_instance(&renderer);
 	create_surface(window, &renderer);
 	pick_physical_device(&renderer);
