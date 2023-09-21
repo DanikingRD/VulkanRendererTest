@@ -6,11 +6,16 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
+
 struct SwapChainDetails {
 	VkSurfaceCapabilitiesKHR capabilities;
 	VkSurfaceFormatKHR* formats;
 	VkPresentModeKHR* preset_modes;
+	uint32_t present_count;
+	uint32_t format_count;
 };
+
 
 const char * VALIDATION_LAYERS[] = {
 	"VK_LAYER_KHRONOS_validation"
@@ -27,6 +32,10 @@ struct Renderer {
 	VkDevice logical_device;
 	VkQueue graphics_queue;
 	VkQueue present_queue;
+	VkSwapchainKHR swap_chain;
+	VkImage* swap_chain_images;
+	VkFormat swap_chain_image_format;
+	VkExtent2D swap_chain_extent;
 };
 
 
@@ -41,6 +50,57 @@ struct QueueFamily {
 	struct OptionFamily presentation;
 };
 
+int clamp(int val, int min, int max) {
+	if (val < min) {
+		return min;
+	} else if (val > max) {
+		return max;
+	} else {
+		return val;
+	}
+}
+
+
+
+VkExtent2D choose_swap_extent(GLFWwindow* window,  struct SwapChainDetails* details) {
+
+	if (details->capabilities.currentExtent.width != INT_MAX) {
+		return details->capabilities.currentExtent;
+	}
+	int w, h;
+
+	glfwGetFramebufferSize(window, &w, &h);
+	
+	VkExtent2D extent = {
+		.width = w,
+		.height = h,
+	};
+	
+	extent.width =
+		clamp(extent.width, details->capabilities.minImageExtent.width, details->capabilities.maxImageExtent.width);
+	
+	extent.height = 
+		clamp(extent.height, details->capabilities.minImageExtent.height, details->capabilities.maxImageExtent.height);
+
+	return extent;
+}
+
+VkPresentModeKHR choose_swapchain_present_mode(struct SwapChainDetails* details) {
+	return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+VkSurfaceFormatKHR choose_swapchain_surface_format(struct SwapChainDetails* details) {
+	for (int i = 0; i < details->format_count; i++) {
+		VkSurfaceFormatKHR format = details->formats[i];
+
+		if (format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+			printf("The SRGB presentation format was picked!\n");
+			return format;
+		}
+	}
+	return details->formats[0];
+}
+
 
 struct SwapChainDetails query_swapchain_details(struct Renderer* renderer) {
 	struct SwapChainDetails details = {};
@@ -49,6 +109,7 @@ struct SwapChainDetails query_swapchain_details(struct Renderer* renderer) {
 	uint32_t formats = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(renderer->physical_device, renderer->surface, &formats, NULL);
 	if (formats != 0) {
+		details.format_count = formats;
 		details.formats = malloc(sizeof(VkSurfaceFormatKHR) * formats);
 		vkGetPhysicalDeviceSurfaceFormatsKHR(renderer->physical_device, renderer->surface, &formats, details.formats);
 	}
@@ -57,14 +118,13 @@ struct SwapChainDetails query_swapchain_details(struct Renderer* renderer) {
 	vkGetPhysicalDeviceSurfacePresentModesKHR(renderer->physical_device, renderer->surface, &present_modes, NULL);
 
 	if (present_modes != 0) {
+		details.present_count = present_modes;
 		details.preset_modes = malloc(sizeof(VkPresentModeKHR) * present_modes);
 		vkGetPhysicalDeviceSurfacePresentModesKHR(renderer->physical_device, renderer->surface, &present_modes, details.preset_modes);
 	}
 
 	return details;
 }
-
-
 struct QueueFamily find_queue_families(struct Renderer* renderer, VkPhysicalDevice device) {
 	struct QueueFamily family;
 	uint32_t count = 0;
@@ -95,6 +155,62 @@ struct QueueFamily find_queue_families(struct Renderer* renderer, VkPhysicalDevi
 	return family;
 }
 
+
+void create_swap_chain(GLFWwindow* window, struct Renderer* renderer) {
+	struct SwapChainDetails details = query_swapchain_details(renderer);
+	VkSurfaceFormatKHR surface_format = choose_swapchain_surface_format(&details);
+	VkPresentModeKHR present_mode = choose_swapchain_present_mode(&details);
+	VkExtent2D extent = choose_swap_extent(window, &details);
+	uint32_t image_count = details.capabilities.minImageCount + 1;
+
+	if (details.capabilities.maxImageCount > 0 && image_count > details.capabilities.maxImageCount) {
+		image_count = details.capabilities.maxImageCount;
+	}
+	
+	VkSwapchainCreateInfoKHR create_info = {};
+	create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+	create_info.surface = renderer->surface;
+	create_info.minImageCount = image_count;
+	create_info.imageFormat = surface_format.format;
+	create_info.imageColorSpace = surface_format.colorSpace;
+	create_info.imageExtent = extent;
+	create_info.imageArrayLayers = 1;
+	create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+	struct QueueFamily family = find_queue_families(renderer, renderer->physical_device);
+	uint32_t queue_indices[2] = { family.graphics.value, family.presentation.value };
+	if (family.graphics.value != family.presentation.value) {
+		create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+		create_info.queueFamilyIndexCount = 2;
+		create_info.pQueueFamilyIndices = queue_indices;
+	} else {
+		create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		create_info.queueFamilyIndexCount = 0;
+		create_info.pQueueFamilyIndices = NULL;
+	}
+	create_info.preTransform = details.capabilities.currentTransform;
+	create_info.compositeAlpha= VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+	create_info.presentMode = present_mode;
+	create_info.clipped = VK_TRUE;
+	create_info.oldSwapchain = NULL;
+	
+	VkResult result = vkCreateSwapchainKHR(renderer->logical_device, &create_info, NULL, &renderer->swap_chain);
+	if (result != VK_SUCCESS) {
+		printf("Failed to create swapchain. Error code: %d\n", result);
+	}
+
+	vkGetSwapchainImagesKHR(renderer->logical_device, renderer->swap_chain, &image_count, NULL);
+	renderer->swap_chain_images = malloc(sizeof(VkImage) * image_count);
+	vkGetSwapchainImagesKHR(renderer->logical_device, renderer->swap_chain, &image_count, renderer->swap_chain_images);
+	renderer->swap_chain_image_format = surface_format.format;
+	renderer->swap_chain_extent = extent; 
+	printf("Swapchain created.\n");
+
+	free(details.formats);
+	free(details.preset_modes);
+	details.formats = NULL;
+	details.preset_modes = NULL;
+}
 
 int check_validation_layers_support() {
 	uint32_t available_layers_size;
@@ -325,7 +441,6 @@ void pick_physical_device(struct Renderer* renderer){
 		vkGetPhysicalDeviceFeatures(device, &features);
 		if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && features.geometryShader) {
 			struct QueueFamily family = find_queue_families(renderer, device);
-			// bool extensions_supported = check_device_extension_support(device);
 	 		if (is_queue_family_ready(family)) {
 				renderer->physical_device = device;
 				struct SwapChainDetails details = query_swapchain_details(renderer);
@@ -342,6 +457,19 @@ void pick_physical_device(struct Renderer* renderer){
 		printf("Failed to find a suitable GPU.\n");
 	}
 }
+
+
+void freeMemory(GLFWwindow* window, struct Renderer* renderer) {
+	vkDestroySwapchainKHR(renderer->logical_device, renderer->swap_chain, NULL);
+	vkDestroyDevice(renderer->logical_device, NULL);
+	vkDestroySurfaceKHR(renderer->instance, renderer->surface, NULL);
+	vkDestroyInstance(renderer->instance, NULL);
+	glfwDestroyWindow(window);
+	glfwTerminate();
+	
+}
+
+
 int main(void) {
     if (!glfwInit()) {
 		printf("Failed to initialize GLFW.");
@@ -360,12 +488,11 @@ int main(void) {
 	create_vk_instance(&renderer);
 	create_surface(window, &renderer);
 	pick_physical_device(&renderer);
+	create_swap_chain(window, &renderer);
 	while(!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
 	}
-	glfwDestroyWindow(window);
-	glfwTerminate();
-	vkDestroySurfaceKHR(renderer.instance, renderer.surface, NULL);
-	vkDestroyInstance(renderer.instance, NULL);
+	
+	freeMemory(window, &renderer);
 	return 0;
 }
