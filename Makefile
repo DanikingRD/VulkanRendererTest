@@ -1,6 +1,8 @@
 OUTPUT_DIR:=out
 SRC:= src/main.c
 OBJ:=$(SRC:.c=.o)
+
+GLSLC:=glslc
 CC:=cc
 CFLAGS:= -Wall -Wextra
 LIBRARIES:= -lglfw -lvulkan
