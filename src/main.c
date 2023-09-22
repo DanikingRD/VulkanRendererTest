@@ -35,6 +35,9 @@ struct Renderer {
 	VkFramebuffer* swapchain_frame_buffers;
 	VkCommandPool command_pool;
 	VkCommandBuffer command_buffer;
+	VkSemaphore image_available_semaphore;
+	VkSemaphore render_finished_semaphore;
+	VkFence in_flight_fence;
 };
 
 
@@ -71,6 +74,98 @@ char* read_file(const char* file_name, long* size) {
 	return buffer;
 }
 
+void create_sync_objects(struct Renderer* renderer) {
+	VkSemaphoreCreateInfo semaphore_info = {};
+	semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+	VkFenceCreateInfo fence_info = {};
+	fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+	if (vkCreateSemaphore(renderer->logical_device, &semaphore_info, NULL, &renderer->image_available_semaphore) != VK_SUCCESS ||
+    	vkCreateSemaphore(renderer->logical_device, &semaphore_info, NULL, &renderer->render_finished_semaphore) != VK_SUCCESS ||
+    	vkCreateFence(renderer->logical_device, &fence_info, NULL, &renderer->in_flight_fence) != VK_SUCCESS) {
+	}
+}
+
+
+void record_command_buffer(struct Renderer* renderer, uint32_t image_index) {
+	VkCommandBufferBeginInfo info = {};
+	info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+	VkResult begin_buffer_res = vkBeginCommandBuffer(renderer->command_buffer, &info);
+
+	if (begin_buffer_res != VK_SUCCESS) {
+		printf("Failed to create begin command buffer. code: %d\n", begin_buffer_res);
+	}
+	VkOffset2D offs = {0,0 };
+	VkRenderPassBeginInfo begin_render_pass_info = {};
+	begin_render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+ 	begin_render_pass_info.renderPass = renderer->render_pass;
+	begin_render_pass_info.framebuffer = renderer->swapchain_frame_buffers[image_index];
+	begin_render_pass_info.renderArea.offset = offs; 
+	begin_render_pass_info.renderArea.extent = renderer->swap_chain_extent;
+	
+	VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+	begin_render_pass_info.clearValueCount = 1;
+	begin_render_pass_info.pClearValues = &clearColor;
+
+	vkCmdBeginRenderPass(renderer->command_buffer, &begin_render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdBindPipeline(renderer->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->graphics_pipeline);
+	vkCmdDraw(renderer->command_buffer, 3, 1, 0, 0);
+	vkCmdEndRenderPass(renderer->command_buffer);
+
+	if (vkEndCommandBuffer(renderer->command_buffer) != VK_SUCCESS) {
+		printf("Failed to end command buffer\n");
+	}
+}
+
+
+void draw_frame(struct Renderer* renderer) {
+	vkWaitForFences(renderer->logical_device, 1, &renderer->in_flight_fence, VK_TRUE, UINT64_MAX);
+	vkResetFences(renderer->logical_device, 1, &renderer->in_flight_fence);
+	
+	uint32_t image_index;
+	vkAcquireNextImageKHR
+		(renderer->logical_device, renderer->swap_chain, UINT64_MAX, renderer->image_available_semaphore, VK_NULL_HANDLE, &image_index);
+	vkResetCommandBuffer(renderer->command_buffer, 0);
+	record_command_buffer(renderer, image_index);
+
+	VkSubmitInfo submit_info = {};
+	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+	VkSemaphore wait_semaphores[] = {renderer->image_available_semaphore};
+	VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+	submit_info.waitSemaphoreCount = 1;
+	submit_info.pWaitSemaphores = wait_semaphores;
+	submit_info.pWaitDstStageMask = wait_stages;
+	submit_info.commandBufferCount = 1;
+	submit_info.pCommandBuffers = &renderer->command_buffer;
+
+	VkSemaphore signal[] = {renderer->render_finished_semaphore};
+	submit_info.signalSemaphoreCount = 1;
+	submit_info.pSignalSemaphores = signal;
+
+	if (vkQueueSubmit(renderer->graphics_queue, 1, &submit_info, renderer->in_flight_fence) != VK_SUCCESS) {
+		printf("Failed to submit work.\n");
+	}
+
+	VkPresentInfoKHR present_info = {};
+	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+	present_info.waitSemaphoreCount = 1;
+	present_info.pWaitSemaphores = signal;
+	
+	VkSwapchainKHR swapchains[] = {renderer->swap_chain};
+	present_info.swapchainCount = 1;
+	present_info.pSwapchains = swapchains;
+	present_info.pImageIndices = &image_index;
+
+	present_info.pResults = NULL;
+	vkQueuePresentKHR(renderer->present_queue, &present_info);
+}
+
+
 void create_command_buffer(struct Renderer* renderer) {
 	VkCommandBufferAllocateInfo alloc_info = {};
 	alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -84,16 +179,7 @@ void create_command_buffer(struct Renderer* renderer) {
 		printf("Failed to create command buffer. code: %d\n", result);
 	}
 
-	VkCommandBufferBeginInfo info = {};
-	info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	info.flags = 0;
-	info.pInheritanceInfo = NULL;
 
-	VkResult begin_buffer_res = vkBeginCommandBuffer(renderer->command_buffer, &info);
-
-	if (begin_buffer_res != VK_SUCCESS) {
-		printf("Failed to create begin command buffer. code: %d\n", result);
-	}
 }
 
 void create_frame_buffers(struct Renderer* renderer) {
@@ -142,13 +228,23 @@ void create_render_pass(struct Renderer* renderer) {
 	subpass.colorAttachmentCount = 1;
 	subpass.pColorAttachments = &color_attachment_ref;
 
+	VkSubpassDependency dep = {};
+	dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+	dep.dstSubpass = 0;
+	dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dep.srcAccessMask = 0;
+	dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
 	VkRenderPassCreateInfo render_pass_info = {};
 	render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
 	render_pass_info.attachmentCount = 1;
 	render_pass_info.pAttachments = &color_attachment;
 	render_pass_info.subpassCount = 1;
 	render_pass_info.pSubpasses = &subpass;
-	
+	render_pass_info.dependencyCount = 1;
+	render_pass_info.pDependencies = &dep;
+		
 	VkResult result = vkCreateRenderPass(renderer->logical_device, &render_pass_info, NULL, &renderer->render_pass);
 
 	if (result != VK_SUCCESS) {
@@ -311,6 +407,9 @@ void create_graphics_pipeline(struct Renderer* renderer) {
 	}
 	vkDestroyShaderModule(renderer->logical_device, vert_shader_module, NULL);
 	vkDestroyShaderModule(renderer->logical_device, frag_shader_module, NULL);
+
+	free(vshader_code);
+	free(fshader_code);
 }
 
 struct OptionFamily {
@@ -765,6 +864,9 @@ void pick_physical_device(struct Renderer* renderer){
 }
 
 void freeMemory(GLFWwindow* window, struct Renderer* renderer) {
+	vkDestroySemaphore(renderer->logical_device, renderer->image_available_semaphore, NULL);
+	vkDestroySemaphore(renderer->logical_device, renderer->render_finished_semaphore, NULL);
+	vkDestroyFence(renderer->logical_device, renderer->in_flight_fence, NULL);
 	vkDestroyCommandPool(renderer->logical_device, renderer->command_pool, NULL);
 	for (uint32_t i = 0; i < renderer->swap_chain_image_count; i++) {
 		vkDestroyFramebuffer(renderer->logical_device, renderer->swapchain_frame_buffers[i], NULL);
@@ -810,9 +912,12 @@ int main(void) {
 	create_frame_buffers(&renderer);
 	create_command_pool(&renderer);
 	create_command_buffer(&renderer);
+	create_sync_objects(&renderer);
 	while(!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
+		draw_frame(&renderer);
 	}
+	vkDeviceWaitIdle(renderer.logical_device);
 	freeMemory(window, &renderer);
 	return 0;
 }

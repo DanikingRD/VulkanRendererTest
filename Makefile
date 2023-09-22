@@ -4,7 +4,7 @@ OBJ:=$(SRC:.c=.o)
 
 GLSLC:=glslc
 CC:=cc
-CFLAGS:= -Wall -Wextra
+CFLAGS:= -Wall -Wextra -O2
 LIBRARIES:= -lglfw -lvulkan
 
 all: ${OUTPUT_DIR} $(OBJ)
