@@ -33,6 +33,8 @@ struct Renderer {
 	VkRenderPass render_pass;
 	VkPipeline graphics_pipeline;
 	VkFramebuffer* swapchain_frame_buffers;
+	VkCommandPool command_pool;
+	VkCommandBuffer command_buffer;
 };
 
 
@@ -69,8 +71,29 @@ char* read_file(const char* file_name, long* size) {
 	return buffer;
 }
 
-void create_command_pool() {
+void create_command_buffer(struct Renderer* renderer) {
+	VkCommandBufferAllocateInfo alloc_info = {};
+	alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	alloc_info.commandPool = renderer->command_pool;
+	alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	alloc_info.commandBufferCount = 1;
 
+	VkResult result = vkAllocateCommandBuffers(renderer->logical_device, &alloc_info, &renderer->command_buffer);
+
+	if (result != VK_SUCCESS) {
+		printf("Failed to create command buffer. code: %d\n", result);
+	}
+
+	VkCommandBufferBeginInfo info = {};
+	info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	info.flags = 0;
+	info.pInheritanceInfo = NULL;
+
+	VkResult begin_buffer_res = vkBeginCommandBuffer(renderer->command_buffer, &info);
+
+	if (begin_buffer_res != VK_SUCCESS) {
+		printf("Failed to create begin command buffer. code: %d\n", result);
+	}
 }
 
 void create_frame_buffers(struct Renderer* renderer) {
@@ -125,7 +148,6 @@ void create_render_pass(struct Renderer* renderer) {
 	render_pass_info.pAttachments = &color_attachment;
 	render_pass_info.subpassCount = 1;
 	render_pass_info.pSubpasses = &subpass;
-	render_pass_info.pNext = NULL;
 	
 	VkResult result = vkCreateRenderPass(renderer->logical_device, &render_pass_info, NULL, &renderer->render_pass);
 
@@ -207,12 +229,15 @@ void create_graphics_pipeline(struct Renderer* renderer) {
 	VkPipelineRasterizationStateCreateInfo rasterizer = {};
 	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	rasterizer.depthClampEnable = VK_FALSE;
-	rasterizer.rasterizerDiscardEnable = VK_TRUE;
+	rasterizer.rasterizerDiscardEnable = VK_FALSE;
 	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
 	rasterizer.lineWidth = 1.0f;
 	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
 	rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
 	rasterizer.depthBiasEnable = VK_FALSE;
+	rasterizer.depthBiasConstantFactor = 0.0f;
+	rasterizer.depthBiasClamp = 0.0f;
+	rasterizer.depthBiasSlopeFactor = 0.0f;
 
 	VkPipelineMultisampleStateCreateInfo multisampling = {};
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -229,6 +254,12 @@ void create_graphics_pipeline(struct Renderer* renderer) {
 		| VK_COLOR_COMPONENT_B_BIT
 		| VK_COLOR_COMPONENT_A_BIT;
 	color_blend_attachment.blendEnable = VK_FALSE;
+	color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
+	color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
+	color_blend_attachment.colorBlendOp = VK_BLEND_OP_ADD; // Optional
+	color_blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
+	color_blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
+	color_blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD; // Optional
 	
 	VkPipelineColorBlendStateCreateInfo color_bleding = {};
 	color_bleding.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -243,8 +274,10 @@ void create_graphics_pipeline(struct Renderer* renderer) {
 
 	VkPipelineLayoutCreateInfo pipeline_layout = {};
 	pipeline_layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipeline_layout.setLayoutCount = 0;
-	pipeline_layout.pSetLayouts = NULL;
+	pipeline_layout.setLayoutCount = 0; // Optional
+	pipeline_layout.pSetLayouts = NULL; // Optional
+	pipeline_layout.pushConstantRangeCount = 0; // Optional
+	pipeline_layout.pPushConstantRanges = NULL; // Optional
 	VkResult result = vkCreatePipelineLayout(renderer->logical_device, &pipeline_layout, NULL, &renderer->pipeline_layout);
 	if (result != VK_SUCCESS) {
 		printf("Failed to create pipeline layout. Error code: %d\n", result);
@@ -266,6 +299,8 @@ void create_graphics_pipeline(struct Renderer* renderer) {
 	pipeline_info.layout = renderer->pipeline_layout;
 	pipeline_info.renderPass = renderer->render_pass;
 	pipeline_info.subpass = 0;
+	pipeline_info.basePipelineIndex = -1;
+	pipeline_info.basePipelineHandle = VK_NULL_HANDLE;
 	
 	VkResult pipeline_result = 
 		vkCreateGraphicsPipelines(renderer->logical_device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &renderer->graphics_pipeline);
@@ -288,7 +323,6 @@ struct QueueFamily {
 	struct OptionFamily graphics;
 	struct OptionFamily presentation;
 };
-
 
 void create_image_views(struct Renderer* renderer) {
 	renderer->swap_chain_image_views = malloc(sizeof(VkImageView) * renderer->swap_chain_image_count);
@@ -412,6 +446,20 @@ struct QueueFamily find_queue_families(struct Renderer* renderer, VkPhysicalDevi
 	return family;
 }
 
+
+void create_command_pool(struct Renderer* renderer) {
+	struct QueueFamily family = find_queue_families(renderer, renderer->physical_device);
+	VkCommandPoolCreateInfo info = {};
+	info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+	info.queueFamilyIndex = family.graphics.value;
+
+	VkResult result = vkCreateCommandPool(renderer->logical_device, &info, NULL, &renderer->command_pool);
+
+	if (result != VK_SUCCESS) {
+		printf("Failed to create command pool. Error code: %d\n", result);
+	}
+}
 
 void create_swap_chain(GLFWwindow* window, struct Renderer* renderer) {
 	struct SwapChainDetails details = query_swapchain_details(renderer);
@@ -717,6 +765,7 @@ void pick_physical_device(struct Renderer* renderer){
 }
 
 void freeMemory(GLFWwindow* window, struct Renderer* renderer) {
+	vkDestroyCommandPool(renderer->logical_device, renderer->command_pool, NULL);
 	for (uint32_t i = 0; i < renderer->swap_chain_image_count; i++) {
 		vkDestroyFramebuffer(renderer->logical_device, renderer->swapchain_frame_buffers[i], NULL);
 	}
@@ -759,6 +808,8 @@ int main(void) {
 	create_render_pass(&renderer);
 	create_graphics_pipeline(&renderer);
 	create_frame_buffers(&renderer);
+	create_command_pool(&renderer);
+	create_command_buffer(&renderer);
 	while(!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
 	}
