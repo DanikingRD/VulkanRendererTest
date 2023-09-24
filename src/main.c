@@ -818,9 +818,9 @@ void create_vk_instance(struct Renderer* renderer) {
 	for (uint32_t i = 0; i < available_ext_count; i++) {
 		printf(" * %s\n", properties[i].extensionName);
 	}
-
-	if (vkCreateInstance(&create_info, NULL, &renderer->instance)!= VK_SUCCESS) {
-		printf("Failed to initialize Vulkan.\n");
+	VkResult result = vkCreateInstance(&create_info, NULL, &renderer->instance); 
+	if (result != VK_SUCCESS) {
+		printf("Failed to initialize Vulkan. code: %d\n", result);
 	} else {
 		printf("Vulkan initialized successfully.\n");
 	}
